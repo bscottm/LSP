@@ -7,6 +7,14 @@
           "default": "// Settings in here override those in \"LSP/LSP.sublime-settings\",\n\n{\n\t$0\n}\n"}
     },
     {
+        "caption": "Preferences: LSP Keybindings",
+        "command": "edit_settings",
+        "args": {
+            "base_file": "${packages}/LSP/Keymaps/Default (${platform}).sublime-keymap",
+            "user_file": "${packages}/User/Default ($platform).sublime-keymap",
+            "default": "// Settings in here override those in \"LSP/Keymaps/Default (${platform}).sublime-keymap\",\n\n{\n\t$0\n}\n"}
+    },
+    {
         "caption": "LSP: Setup Language Server",
         "command": "lsp_setup_language_server",
         "args": {}
@@ -52,8 +60,26 @@
         "args": {}
     },
     {
-        "caption": "LSP: Show Diagnostics",
-        "command": "lsp_show_diagnostics_panel",
+        "caption": "LSP: Toggle Panel: Language Servers",
+        "command": "lsp_toggle_server_panel",
+    },
+    {
+        "caption": "LSP: Toggle Panel: Diagnostics",
+        "command": "lsp_show_diagnostics_panel"
+    },
+    {
+        "caption": "LSP: Clear Diagnostics",
+        "command": "lsp_clear_diagnostics",
+        "args": {}
+    },
+    {
+        "caption": "LSP: Next Diagnostic",
+        "command": "lsp_next_diagnostic",
+        "args": {}
+    },
+    {
+        "caption": "LSP: Previous Diagnostic",
+        "command": "lsp_previous_diagnostic",
         "args": {}
     },
     {

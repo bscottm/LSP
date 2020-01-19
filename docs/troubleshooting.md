@@ -1,9 +1,9 @@
 ## Self-help instructions
 
-In LSP Settings enable the `log_debug` setting and `log_payloads` if needed. Restart Sublime and watch the logs as you reproduce the problem.
+Enable LSP logging: In LSP Settings enable the `log_debug` setting and `log_payloads` if needed.
+Enable server logging: set `log_server` and `log_stderr` to `true`
+Restart Sublime and open the console (``ctrl+` ``) to see the additional logging.
 If you believe the issue is with this package, please include the output from the Sublime console in your issue report!
-
-> **NOTE:** `log_stderr` can also be set to `true` to see the language server's own logging.
 
 ## Common problems
 
@@ -27,7 +27,11 @@ This issue can be solved in a few ways:
 * On OS-X: Install the [SublimeFixMacPath](https://github.com/int3h/SublimeFixMacPath) package
 * On OS-X: Use `launchctl setenv` to set PATH for OS-X UI applications.
 
-### 3. Multiple root folders?
+## Known Issues
 
-Have you added multiple folders to your Sublime workspace? LSP may not handle your second folder as expected, see [this issue](https://github.com/tomv564/LSP/issues/81) for more details.
+### Completions not shown after certain keywords
 
+Sublime Text's built-in `Completion Rules.tmPreferences` for some languages surpress completions after certain keywords.
+Python's `import` keyword is an example - no completions are shown at `import a|` (See [this LSP issue](https://github.com/sublimelsp/LSP/issues/203)).
+The solution is to put an edited version of the `Completion Rules.tmPreferences` in the `Packages` folder (you may need to clear the copy in the Cache folder afterwards).
+More details on [workaround and a final fix for Lua](https://forum.sublimetext.com/t/bug-lua-autocomplete-not-working-between-if-then/36635)

@@ -3,24 +3,21 @@ import os
 import sublime
 import sublime_plugin
 
-try:
-    from typing import Any, List, Dict, Tuple, Callable, Optional
-    assert Any and List and Dict and Tuple and Callable and Optional
-except ImportError:
-    pass
-
-from .core.configurations import is_supported_syntax
-from .core.diagnostics import (
-    DiagnosticsUpdate
-)
-from .core.events import global_events
 from .core.logging import debug
 from .core.panels import ensure_panel
-from .core.protocol import Diagnostic, DiagnosticSeverity
-from .core.settings import settings, PLUGIN_NAME, client_configs
-from .core.views import range_to_region
-from .core.workspace import get_project_path
-from .core.registry import windows
+from .core.protocol import Diagnostic, DiagnosticSeverity, DiagnosticRelatedInformation, Point, Range
+from .core.settings import settings, PLUGIN_NAME
+from .core.views import range_to_region, region_to_range
+from .core.registry import windows, LSPViewEventListener
+from .core.diagnostics import DiagnosticsWalker, DiagnosticsUpdateWalk, DiagnosticsCursor, DocumentsState
+
+MYPY = False
+if MYPY:
+    from typing import Any, List, Dict, Callable, Optional, Tuple
+    from typing_extensions import Protocol
+    assert Any and List and Dict and Callable and Optional and Tuple
+else:
+    Protocol = object  # type: ignore
 
 
 diagnostic_severity_names = {
@@ -37,258 +34,85 @@ diagnostic_severity_scopes = {
     DiagnosticSeverity.Hint: 'markup.inserted.lsp sublimelinter.gutter-mark markup.info.suggestion.lsp'
 }
 
-stylesheet = '''
-            <style>
-                div.error-arrow {
-                    border-top: 0.4rem solid transparent;
-                    border-left: 0.5rem solid color(var(--redish) blend(var(--background) 30%));
-                    width: 0;
-                    height: 0;
-                }
-                div.error {
-                    padding: 0.4rem 0 0.4rem 0.7rem;
-                    margin: 0 0 0.2rem;
-                    border-radius: 0 0.2rem 0.2rem 0.2rem;
-                }
-
-                div.error span.message {
-                    padding-right: 0.7rem;
-                }
-
-                div.error a {
-                    text-decoration: inherit;
-                    padding: 0.35rem 0.7rem 0.45rem 0.8rem;
-                    position: relative;
-                    bottom: 0.05rem;
-                    border-radius: 0 0.2rem 0.2rem 0;
-                    font-weight: bold;
-                }
-                html.dark div.error a {
-                    background-color: #00000018;
-                }
-                html.light div.error a {
-                    background-color: #ffffff18;
-                }
-            </style>
-        '''
-
 UNDERLINE_FLAGS = (sublime.DRAW_SQUIGGLY_UNDERLINE | sublime.DRAW_NO_OUTLINE | sublime.DRAW_NO_FILL |
                    sublime.DRAW_EMPTY_AS_OVERWRITE)
 
 BOX_FLAGS = sublime.DRAW_NO_FILL | sublime.DRAW_EMPTY_AS_OVERWRITE
 
 
-def create_phantom_html(text: str) -> str:
-    global stylesheet
-    formatted = "<br>".join(html.escape(line, quote=False) for line in text.splitlines())
-    return """<body id=inline-error>{}
-                <div class="error-arrow"></div>
-                <div class="error">
-                    <span class="message">{}</span>
-                    <a href="code-actions">Code Actions</a>
-                </div>
-                </body>""".format(stylesheet, formatted)
-
-
-def on_phantom_navigate(view: sublime.View, href: str, point: int):
-    # TODO: don't mess with the user's cursor.
-    sel = view.sel()
-    sel.clear()
-    sel.add(sublime.Region(point))
-    view.run_command("lsp_code_actions")
-
-
-def create_phantom(view: sublime.View, diagnostic: Diagnostic) -> sublime.Phantom:
-    region = range_to_region(diagnostic.range, view)
-    # TODO: hook up hide phantom (if keeping them)
-    content = create_phantom_html(diagnostic.message)
-    return sublime.Phantom(
-        region,
-        '<p>' + content + '</p>',
-        sublime.LAYOUT_BELOW,
-        lambda href: on_phantom_navigate(view, href, region.begin())
-    )
-
-
 def format_severity(severity: int) -> str:
     return diagnostic_severity_names.get(severity, "???")
 
 
-def format_diagnostic(diagnostic: Diagnostic) -> str:
-    location = "{:>8}:{:<4}".format(
-        diagnostic.range.start.row + 1, diagnostic.range.start.col + 1)
-    lines = diagnostic.message.splitlines()
-    formatted = " {}\t{:<12}\t{:<10}\t{}".format(
-        location, diagnostic.source, format_severity(diagnostic.severity), lines[0])
-    for line in lines[1:]:
-        formatted = formatted + "\n {:<12}\t{:<12}\t{:<10}\t{}".format("", "", "", line)
-    return formatted
-
-
-phantom_sets_by_buffer = {}  # type: Dict[int, sublime.PhantomSet]
-
-
-def update_diagnostics_phantoms(view: sublime.View, diagnostics: 'List[Diagnostic]'):
-    global phantom_sets_by_buffer
-
-    buffer_id = view.buffer_id()
-    if not settings.show_diagnostics_phantoms or view.is_dirty():
-        phantoms = None
-    else:
-        phantoms = list(
-            create_phantom(view, diagnostic) for diagnostic in diagnostics)
-    if phantoms:
-        phantom_set = phantom_sets_by_buffer.get(buffer_id)
-        if not phantom_set:
-            phantom_set = sublime.PhantomSet(view, "lsp_diagnostics")
-            phantom_sets_by_buffer[buffer_id] = phantom_set
-        phantom_set.update(phantoms)
-    else:
-        phantom_sets_by_buffer.pop(buffer_id, None)
-
-
-def get_point_diagnostics(view, point):
-    diagnostics = get_view_diagnostics(view)
-    return tuple(
-        diagnostic for diagnostic in diagnostics
-        if range_to_region(diagnostic.range, view).contains(point)
-    )
-
-
-def update_diagnostics_regions(view: sublime.View, diagnostics: 'List[Diagnostic]', severity: int):
-    region_name = "lsp_" + format_severity(severity)
-    if settings.show_diagnostics_phantoms and not view.is_dirty():
-        regions = None
-    else:
-        regions = list(range_to_region(diagnostic.range, view) for diagnostic in diagnostics
-                       if diagnostic.severity == severity)
-    if regions:
-        scope_name = diagnostic_severity_scopes[severity]
-        view.add_regions(
-            region_name, regions, scope_name, settings.diagnostics_gutter_marker,
-            UNDERLINE_FLAGS if settings.diagnostics_highlight_style == "underline" else BOX_FLAGS)
-    else:
-        view.erase_regions(region_name)
-
-
-def update_diagnostics_in_view(view: sublime.View, diagnostics: 'List[Diagnostic]'):
-    if view and view.is_valid():
-        update_diagnostics_phantoms(view, diagnostics)
-        for severity in range(
-                DiagnosticSeverity.Error,
-                DiagnosticSeverity.Error + settings.show_diagnostics_severity_level):
-            update_diagnostics_regions(view, diagnostics, severity)
-
-
-def get_view_diagnostics(view):
+def view_diagnostics(view: sublime.View) -> 'Dict[str, List[Diagnostic]]':
     if view.window():
-        if view.file_name():
-            return windows.lookup(view.window())._diagnostics.get_by_path(view.file_name())
-        else:
-            return []
+        file_name = view.file_name()
+        if file_name:
+            window_diagnostics = windows.lookup(view.window()).diagnostics.get()
+            return window_diagnostics.get(file_name, {})
+    return {}
 
 
-def get_line_diagnostics(view, point):
-    row, _ = view.rowcol(point)
-    diagnostics = get_view_diagnostics(view)
-    return tuple(
-        diagnostic for diagnostic in diagnostics
-        if diagnostic.range.start.row <= row <= diagnostic.range.end.row
-    )
+def filter_by_point(file_diagnostics: 'Dict[str, List[Diagnostic]]', point: Point) -> 'Dict[str, List[Diagnostic]]':
+    diagnostics_by_config = {}
+    for config_name, diagnostics in file_diagnostics.items():
+        point_diagnostics = [
+            diagnostic for diagnostic in diagnostics if diagnostic.range.contains(point)
+        ]
+        if point_diagnostics:
+            diagnostics_by_config[config_name] = point_diagnostics
+    return diagnostics_by_config
 
 
-def get_window_diagnostics(window):
-    return windows.lookup(window)._diagnostics.get()
+def filter_by_range(file_diagnostics: 'Dict[str, List[Diagnostic]]', rge: Range) -> 'Dict[str, List[Diagnostic]]':
+    diagnostics_by_config = {}
+    for config_name, diagnostics in file_diagnostics.items():
+        point_diagnostics = [
+            diagnostic for diagnostic in diagnostics if diagnostic.range.intersects(rge)
+        ]
+        if point_diagnostics:
+            diagnostics_by_config[config_name] = point_diagnostics
+    return diagnostics_by_config
 
 
-def update_diagnostics_in_status_bar(view: sublime.View):
-    errors = 0
-    warnings = 0
-
-    window = view.window()
-    if window:
-        diagnostics_by_file = get_window_diagnostics(window)
-
-        if diagnostics_by_file:
-            for file_path, source_diagnostics in diagnostics_by_file.items():
-
-                if source_diagnostics:
-                    for origin, diagnostics in source_diagnostics.items():
-                        for diagnostic in diagnostics:
-
-                            if diagnostic.severity == DiagnosticSeverity.Error:
-                                errors += 1
-                            if diagnostic.severity == DiagnosticSeverity.Warning:
-                                warnings += 1
-
-        if errors > 0 or warnings > 0:
-            count = 'E: {} W: {}'.format(errors, warnings)
-        else:
-            count = ""
-        view.set_status('lsp_errors_warning_count', count)
-
-
-def update_count_in_status_bar(view):
-    if settings.show_diagnostics_count_in_view_status:
-        update_diagnostics_in_status_bar(view)
-
-
-global_events.subscribe("document.diagnostics",
-                        lambda update: handle_diagnostics(update))
-global_events.subscribe("view.on_activated_async", update_count_in_status_bar)
-
-
-def handle_diagnostics(update: DiagnosticsUpdate):
-    window = update.window
-    view = window.find_open_file(update.file_path)
-    if view:
-        update_diagnostics_in_view(view, update.diagnostics)
-        if settings.show_diagnostics_count_in_view_status:
-            update_diagnostics_in_status_bar(view)
-    else:
-        debug('view not found')
-    update_diagnostics_panel(window)
-
-
-class DiagnosticsCursorListener(sublime_plugin.ViewEventListener):
-    def __init__(self, view):
-        self.view = view
+class DiagnosticsCursorListener(LSPViewEventListener):
+    def __init__(self, view: sublime.View) -> None:
         self.has_status = False
+        super().__init__(view)
 
     @classmethod
-    def is_applicable(cls, view_settings):
-        syntax = view_settings.get('syntax')
-        return settings.show_diagnostics_in_view_status and syntax and is_supported_syntax(syntax, client_configs.all)
+    def is_applicable(cls, view_settings: dict) -> bool:
+        return settings.show_diagnostics_in_view_status and cls.has_supported_syntax(view_settings)
 
-    def on_selection_modified_async(self):
+    def on_selection_modified_async(self) -> None:
         selections = self.view.sel()
         if len(selections) > 0:
             pos = selections[0].begin()
-            line_diagnostics = get_line_diagnostics(self.view, pos)
-            if len(line_diagnostics) > 0:
-                self.show_diagnostics_status(line_diagnostics)
+            region = self.view.line(pos)
+            line_range = region_to_range(self.view, region)
+            file_path = self.view.file_name()
+            if file_path:
+                diagnostics = filter_by_range(self.manager.diagnostics.get_by_file(file_path), line_range)
+                if diagnostics:
+                    flattened = (d for sublist in diagnostics.values() for d in sublist)
+                    first_diagnostic = next(flattened, None)
+                    if first_diagnostic:
+                        self.show_diagnostics_status(first_diagnostic)
             elif self.has_status:
                 self.clear_diagnostics_status()
 
-    def show_diagnostics_status(self, line_diagnostics):
+    def show_diagnostics_status(self, diagnostic: 'Diagnostic') -> None:
         self.has_status = True
-        self.view.set_status('lsp_diagnostics', line_diagnostics[0].message)
+        self.view.set_status('lsp_diagnostics', diagnostic.message)
 
-    def clear_diagnostics_status(self):
+    def clear_diagnostics_status(self) -> None:
         self.view.erase_status('lsp_diagnostics')
         self.has_status = False
 
 
-class LspShowDiagnosticsPanelCommand(sublime_plugin.WindowCommand):
-    def run(self):
-        ensure_diagnostics_panel(self.window)
-        active_panel = self.window.active_panel()
-        is_active_panel = (active_panel == "output.diagnostics")
-
-        if is_active_panel:
-            self.window.run_command("hide_panel", {"panel": "output.diagnostics"})
-        else:
-            self.window.run_command("show_panel", {"panel": "output.diagnostics"})
+class LspClearDiagnosticsCommand(sublime_plugin.WindowCommand):
+    def run(self) -> None:
+        windows.lookup(self.window).diagnostics.clear()
 
 
 def ensure_diagnostics_panel(window: sublime.Window) -> 'Optional[sublime.View]':
@@ -296,76 +120,305 @@ def ensure_diagnostics_panel(window: sublime.Window) -> 'Optional[sublime.View]'
                         "Packages/" + PLUGIN_NAME + "/Syntaxes/Diagnostics.sublime-syntax")
 
 
-def update_diagnostics_panel(window: sublime.Window):
-    assert window, "missing window!"
+class LspNextDiagnosticCommand(sublime_plugin.WindowCommand):
 
-    if not window.is_valid():
-        debug('ignoring update to closed window')
-        return
+    def run(self) -> None:
+        windows.lookup(self.window).diagnostics.select_next()
 
-    base_dir = get_project_path(window)
 
-    diagnostics_by_file = get_window_diagnostics(window)
-    if diagnostics_by_file is not None:
+class LspPreviousDiagnosticCommand(sublime_plugin.WindowCommand):
 
-        active_panel = window.active_panel()
-        is_active_panel = (active_panel == "output.diagnostics")
+    def run(self) -> None:
+        windows.lookup(self.window).diagnostics.select_previous()
 
-        if diagnostics_by_file:
-            panel = ensure_diagnostics_panel(window)
-            assert panel, "must have a panel now!"
-            panel.settings().set("result_base_dir", base_dir)
 
-            auto_open_panel = False
-            to_render = []
-            for file_path, source_diagnostics in diagnostics_by_file.items():
-                try:
-                    relative_file_path = os.path.relpath(file_path, base_dir) if base_dir else file_path
-                except ValueError:
-                    relative_file_path = file_path
-                if source_diagnostics:
-                    formatted = format_diagnostics(relative_file_path, source_diagnostics)
-                    if formatted:
-                        to_render.append(formatted)
-                        if not auto_open_panel:
-                            auto_open_panel = has_relevant_diagnostics(source_diagnostics)
+class LspHideDiagnosticCommand(sublime_plugin.WindowCommand):
 
-            panel.set_read_only(False)
-            panel.run_command("lsp_update_panel", {"characters": "\n".join(to_render)})
-            panel.set_read_only(True)
+    def run(self) -> None:
+        windows.lookup(self.window).diagnostics.select_none()
 
-            if settings.auto_show_diagnostics_panel and not active_panel:
-                if auto_open_panel:
-                    window.run_command("show_panel",
-                                       {"panel": "output.diagnostics"})
 
+class DiagnosticsPhantoms(object):
+
+    def __init__(self, window: sublime.Window) -> None:
+        self._window = window
+        self._last_phantom_set = None  # type: 'Optional[sublime.PhantomSet]'
+
+    def set_diagnostic(self, file_diagnostic: 'Optional[Tuple[str, Diagnostic]]') -> None:
+        self.clear()
+
+        if file_diagnostic:
+            file_path, diagnostic = file_diagnostic
+            view = self._window.open_file(file_path, sublime.TRANSIENT)
+            if view.is_loading():
+                sublime.set_timeout(lambda: self.apply_phantom(view, diagnostic), 500)
+            else:
+                self.apply_phantom(view, diagnostic)
         else:
-            panel = window.find_output_panel("diagnostics")
-            if panel:
-                panel.run_command("lsp_clear_panel")
-                if is_active_panel:
-                    window.run_command("hide_panel",
-                                       {"panel": "output.diagnostics"})
+            if self._last_phantom_set:
+                view = self._last_phantom_set.view
+                has_phantom = view.settings().get('lsp_diagnostic_phantom')
+                if not has_phantom:
+                    view.settings().set('lsp_diagnostic_phantom', False)
+
+    def apply_phantom(self, view: sublime.View, diagnostic: Diagnostic) -> None:
+        phantom_set = sublime.PhantomSet(view, "lsp_diagnostics")
+        phantom = self.create_phantom(view, diagnostic)
+        phantom_set.update([phantom])
+        view.show_at_center(phantom.region)
+        self._last_phantom_set = phantom_set
+        has_phantom = view.settings().get('lsp_diagnostic_phantom')
+        if not has_phantom:
+            view.settings().set('lsp_diagnostic_phantom', True)
+
+    def create_phantom(self, view: sublime.View, diagnostic: Diagnostic) -> sublime.Phantom:
+        region = range_to_region(diagnostic.range, view)
+        line = "[{}] {}".format(diagnostic.source, diagnostic.message) if diagnostic.source else diagnostic.message
+        message = "<p>" + "<br>".join(html.escape(line, quote=False) for line in line.splitlines()) + "</p>"
+
+        additional_infos = "<br>".join([self.format_diagnostic_related_info(info) for info in diagnostic.related_info])
+        severity = "error" if diagnostic.severity == DiagnosticSeverity.Error else "warning"
+        content = message + "<p class='additional'>" + additional_infos + "</p>" if additional_infos else message
+        markup = self.create_phantom_html(content, severity)
+        return sublime.Phantom(
+            region,
+            markup,
+            sublime.LAYOUT_BELOW,
+            self.navigate
+        )
+
+    # TODO: share with hover?
+    def format_diagnostic_related_info(self, info: DiagnosticRelatedInformation) -> str:
+        file_path = info.location.file_path
+        base_dir = windows.lookup(self._window).get_project_path(file_path)
+        if base_dir:
+            file_path = os.path.relpath(file_path, base_dir)
+        location = "{}:{}:{}".format(info.location.file_path, info.location.range.start.row + 1,
+                                     info.location.range.start.col + 1)
+        return "<a href='location:{}'>{}</a>: {}".format(location, location, html.escape(info.message))
+
+    def navigate(self, href: str) -> None:
+        if href == "hide":
+            self.clear()
+        elif href == "next":
+            self._window.run_command("lsp_next_diagnostic")
+        elif href == "previous":
+            self._window.run_command("lsp_previous_diagnostic")
+        elif href.startswith("location"):
+            # todo: share with hover?
+            _, file_path, location = href.split(":", 2)
+            self._window.open_file(file_path + ":" + location, sublime.ENCODED_POSITION | sublime.TRANSIENT)
+
+    def create_phantom_html(self, content: str, severity: str) -> str:
+        stylesheet = sublime.load_resource("Packages/LSP/phantoms.css")
+        return """<body id=inline-error>
+                    <style>{}</style>
+                    <div class="{}-arrow"></div>
+                    <div class="{} container">
+                        <div class="toolbar">
+                            <a href="hide">×</a>
+                            <a href="previous">↑</a>
+                            <a href="next">↓</a>
+                        </div>
+                        <div class="content">{}</div>
+                    </div>
+                </body>""".format(stylesheet, severity, severity, content)
+
+    def clear(self) -> None:
+        if self._last_phantom_set:
+            self._last_phantom_set.update([])
 
 
-def has_relevant_diagnostics(origin_diagnostics):
-    for origin, diagnostics in origin_diagnostics.items():
-        for diagnostic in diagnostics:
-            # debug('severity check', diagnostic.severity, '<=', settings.auto_show_diagnostics_panel_level)
-            if diagnostic.severity <= settings.auto_show_diagnostics_panel_level:
-                return True
+class DiagnosticViewRegions(DiagnosticsUpdateWalk):
 
-    return False
+    def __init__(self, view: sublime.View) -> None:
+        self._view = view
+        self._regions = {}  # type: Dict[int, List[sublime.Region]]
+        self._relevant_file = False
+
+    def begin(self) -> None:
+        for severity in self._regions:
+            self._regions[severity] = []
+
+    def begin_file(self, file_name: str) -> None:
+        # TODO: would be nice if walk could skip this updater
+        if file_name == self._view.file_name():
+            self._relevant_file = True
+
+    def diagnostic(self, diagnostic: Diagnostic) -> None:
+        if self._relevant_file:
+            self._regions.setdefault(diagnostic.severity, []).append(range_to_region(diagnostic.range, self._view))
+
+    def end_file(self, file_name: str) -> None:
+        self._relevant_file = False
+
+    def end(self) -> None:
+        for severity in range(DiagnosticSeverity.Error, DiagnosticSeverity.Hint):
+            region_name = "lsp_" + format_severity(severity)
+            if severity in self._regions:
+                regions = self._regions[severity]
+                scope_name = diagnostic_severity_scopes[severity]
+                self._view.add_regions(
+                    region_name, regions, scope_name, settings.diagnostics_gutter_marker,
+                    UNDERLINE_FLAGS if settings.diagnostics_highlight_style == "underline" else BOX_FLAGS)
+            else:
+                self._view.erase_regions(region_name)
 
 
-def format_diagnostics(file_path, origin_diagnostics):
-    content = ""
-    for origin, diagnostics in origin_diagnostics.items():
-        for diagnostic in diagnostics:
-            if diagnostic.severity <= settings.show_diagnostics_severity_level:
-                item = format_diagnostic(diagnostic)
-                content += item + "\n"
-    if content:
-        return " ◌ {}:\n{}".format(file_path, content)
-    else:
-        return None
+class HasRelevantDiagnostics(DiagnosticsUpdateWalk):
+    def __init__(self) -> None:
+        self.result = False
+
+    def begin(self) -> None:
+        self.result = False
+
+    def diagnostic(self, diagnostic: Diagnostic) -> None:
+        if diagnostic.severity <= settings.auto_show_diagnostics_panel_level:
+            self.result = True
+
+
+class StatusBarSummary(DiagnosticsUpdateWalk):
+    def __init__(self, window: sublime.Window) -> None:
+        self._window = window
+
+    def begin(self) -> None:
+        self._errors = 0
+        self._warnings = 0
+
+    def diagnostic(self, diagnostic: Diagnostic) -> None:
+        if diagnostic.severity == DiagnosticSeverity.Error:
+            self._errors += 1
+        elif diagnostic.severity == DiagnosticSeverity.Warning:
+            self._warnings += 1
+
+    def end(self) -> None:
+        if self._errors > 0 or self._warnings > 0:
+            count = 'E: {} W: {}'.format(self._errors, self._warnings)
+        else:
+            count = ""
+
+        # todo: make a sticky status on active view.
+        active_view = self._window.active_view()
+        if active_view:
+            active_view.set_status('lsp_errors_warning_count', count)
+
+
+class DiagnosticOutputPanel(DiagnosticsUpdateWalk):
+    def __init__(self, window: sublime.Window) -> None:
+        self._window = window
+        self._to_render = []  # type: List[str]
+        self._panel = ensure_diagnostics_panel(self._window)
+
+    def begin(self) -> None:
+        self._to_render = []
+        self._file_content = ""
+
+    def begin_file(self, file_path: str) -> None:
+        self._base_dir = windows.lookup(self._window).get_project_path(file_path)
+        self._file_content = ""
+
+    def diagnostic(self, diagnostic: Diagnostic) -> None:
+        if diagnostic.severity <= settings.show_diagnostics_severity_level:
+            item = self.format_diagnostic(diagnostic)
+            self._file_content += item + "\n"
+
+    def end_file(self, file_path: str) -> None:
+        if self._file_content:
+            panel_file_path = os.path.relpath(file_path, self._base_dir) if self._base_dir else file_path
+            self._to_render.append(" ◌ {}:\n{}".format(panel_file_path, self._file_content))
+
+    def end(self) -> None:
+        assert self._panel, "must have a panel now!"
+        self._panel.settings().set("result_base_dir", self._base_dir)
+        self._panel.run_command("lsp_update_panel", {"characters": "\n".join(self._to_render)})
+
+    def format_diagnostic(self, diagnostic: Diagnostic) -> str:
+        location = "{:>8}:{:<4}".format(
+            diagnostic.range.start.row + 1, diagnostic.range.start.col + 1)
+        lines = diagnostic.message.splitlines()
+        formatted = " {}\t{:<12}\t{:<10}\t{}".format(
+            location, diagnostic.source, format_severity(diagnostic.severity), lines[0])
+        for line in lines[1:]:
+            formatted = formatted + "\n {:<12}\t{:<12}\t{:<10}\t{}".format("", "", "", line)
+        return formatted
+
+
+class DiagnosticsPresenter(object):
+
+    def __init__(self, window: sublime.Window, documents_state: DocumentsState) -> None:
+        self._window = window
+        self._dirty = False
+        self._received_diagnostics_after_change = False
+        self._show_panel_on_diagnostics = False if settings.auto_show_diagnostics_panel == 'never' else True
+        self._panel_update = DiagnosticOutputPanel(self._window)
+        self._bar_summary_update = StatusBarSummary(self._window)
+        self._relevance_check = HasRelevantDiagnostics()
+        self._cursor = DiagnosticsCursor(settings.show_diagnostics_severity_level)
+        self._phantoms = DiagnosticsPhantoms(self._window)
+        if settings.auto_show_diagnostics_panel == 'saved':
+            setattr(documents_state, 'changed', self.on_document_changed)
+            setattr(documents_state, 'saved', self.on_document_saved)
+
+    def on_document_changed(self) -> None:
+        self._received_diagnostics_after_change = False
+
+    def on_document_saved(self) -> None:
+        if self._received_diagnostics_after_change:
+            self.show_panel_if_relevant()
+        else:
+            self._show_panel_on_diagnostics = True
+
+    def show_panel_if_relevant(self) -> None:
+        self._show_panel_on_diagnostics = False
+
+        if self._relevance_check.result:
+            self._window.run_command("show_panel", {"panel": "output.diagnostics"})
+        else:
+            self._window.run_command("hide_panel", {"panel": "output.diagnostics"})
+
+    def update(self, file_path: str, config_name: str, diagnostics: 'Dict[str, Dict[str, List[Diagnostic]]]') -> None:
+        self._diagnostics = diagnostics
+        self._received_diagnostics_after_change = True
+
+        if not self._window.is_valid():
+            debug('ignoring update to closed window')
+            return
+
+        updatables = [self._panel_update, self._relevance_check]
+        if settings.show_diagnostics_count_in_view_status:
+            updatables.append(self._bar_summary_update)
+
+        view = self._window.find_open_file(file_path)
+        if view and view.is_valid():
+            view_region_updater = DiagnosticViewRegions(view)
+            updatables.append(view_region_updater)
+        else:
+            debug('view not found for', file_path)
+
+        if self._cursor.has_value:
+            updatables.append(self._cursor.update())
+
+        walker = DiagnosticsWalker(updatables)
+        walker.walk(diagnostics)
+
+        if settings.auto_show_diagnostics_panel == 'always' or self._show_panel_on_diagnostics:
+            self.show_panel_if_relevant()
+
+    def select(self, direction: int) -> None:
+        file_path = None  # type: Optional[str]
+        point = None  # type: Optional[Point]
+
+        if not self._cursor.has_value:
+            active_view = self._window.active_view()
+            if active_view:
+                file_path = active_view.file_name()
+                point = Point(*active_view.rowcol(active_view.sel()[0].begin()))
+
+        walk = self._cursor.from_diagnostic(direction) if self._cursor.has_value else self._cursor.from_position(
+            direction, file_path, point)
+        walker = DiagnosticsWalker([walk])
+        walker.walk(self._diagnostics)
+        self._phantoms.set_diagnostic(self._cursor.value)
+
+    def deselect(self) -> None:
+        self._phantoms.set_diagnostic(None)

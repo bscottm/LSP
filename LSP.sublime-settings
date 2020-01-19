@@ -5,7 +5,8 @@
 
   // Open and close the diagnostics panel automatically,
   // depending on available diagnostics.
-  "auto_show_diagnostics_panel": true,
+  // Valid values are "never", "always" and "saved"
+  "auto_show_diagnostics_panel": "saved",
 
   // Open the diagnostics panel automatically
   // when diagnostics level is equal to or less than:
@@ -13,10 +14,7 @@
   // warning: 2
   // info: 3
   // hint: 4
-  "auto_show_diagnostics_panel_level": 3,
-
-  // Show in-line diagnostics using phantoms for unchanged files.
-  "show_diagnostics_phantoms": false,
+  "auto_show_diagnostics_panel_level": 2,
 
   // Show errors and warnings count in the status bar
   "show_diagnostics_count_in_view_status": false,
@@ -31,7 +29,7 @@
   // warning: 2
   // info: 3
   // hint: 4
-  "show_diagnostics_severity_level": 3,
+  "show_diagnostics_severity_level": 2,
 
   // Highlighting style of code diagnostics.
   // Valid values are "underline" or "box"
@@ -57,6 +55,9 @@
   // Show a bulb in the gutter when code actions are available
   "show_code_actions_bulb": false,
 
+  // Show symbol action links in hover popup if available
+  "show_symbol_action_links": false,
+
   // Request completions for all characters if set to true,
   // or just after trigger characters only otherwise.
   "complete_all_chars": true,
@@ -71,27 +72,31 @@
   // Disable Sublime Text's explicit and word completion.
   "only_show_lsp_completions": false,
 
-  // When presenting completions, prefer the "label" over the "filterText" key
-  // in the CompletionItem. By default, the "filterText" is chosen over the
-  // "label". If the "filterText" is not present, fall back to the "label".
-  "prefer_label_over_filter_text": false,
-
   // Show symbol references in Sublime's quick panel instead of the bottom panel.
   "show_references_in_quick_panel": false,
 
-  // Use monospace font for the quick panel.
-  "quick_panel_monospace_font": false,
+  // Disable language client capabilities. Supported values:
+  // "hover", "completion", "colorProvider", "documentHighlight", "signatureHelp"
+  "disabled_capabilities": [],
 
   // Show verbose debug messages in the sublime console.
   "log_debug": false,
 
-  // Show notifications from language servers in the console.
+  // Show messages from language servers in the Language Servers output panel.
+  // This output panel can be toggled from the command palette with the
+  // command "LSP: Toggle Panel: Language Servers".
   "log_server": true,
 
-  // Show language server stderr output in the console.
+  // Show language server stderr output in the Language Servers output panel.
+  // This output panel can be toggled from the command palette with the
+  // command "LSP: Toggle Panel: Language Servers".
   "log_stderr": false,
 
-  // Show full JSON-RPC responses in the console
+  // Show full JSON-RPC requests/responses/notifications in the Language Servers
+  // output panel. Note that if the payload is very large, SublimeText will not
+  // highlight the log line.
+  // This output panel can be toggled from the command palette with the
+  // command "LSP: Toggle Panel: Language Servers".
   "log_payloads": false,
 
   // User clients configuration can be used to
@@ -116,6 +121,18 @@
   //
   //     // See: https://github.com/Microsoft/language-server-protocol/issues/213
   //     "languageId": "python",
+  //
+  //     # TCP mode (off unless tcp_mode or tcp_port are set)
+  //
+  //     // Set to "host" if the server connects to the editor. Otherwise, LSP will connect to the server.
+  //     "tcp_mode": "",
+  //
+  //     // Port to connect to. If tcp_mode="host", you likely want to leave this empty so LSP selects a random port.
+  //     // The chosen port can be passed as a server argument using a {port} placeholder.
+  //     "tcp_port": 1234,
+  //
+  //     // Host to connect to if not localhost
+  //     "tcp_host": "",
   //
   //     # Optional settings (key-value pairs):
   //
@@ -269,7 +286,8 @@
     },
     "dart": {
       "command": [
-        "dart_language_server"
+        // Specify a dart command like the below in your LSP User settings.
+        // "dart", "/usr/local/opt/dart/libexec/bin/snapshots/analysis_server.dart.snapshot", "--lsp"
       ],
       "languageId": "dart",
       "scopes": [
@@ -277,6 +295,19 @@
       ],
       "syntaxes": [
         "Packages/Dart/Dart.tmLanguage"
+      ]
+    },
+    "elixir-ls": {
+      "command": [
+        // Specify path to language_server.sh from https://github.com/elixir-lsp/elixir-ls here
+        // "/home/someUser/somePlace/elixir-ls/release/language_server.sh"
+      ],
+      "languageId": "elixir",
+      "scopes": ["source.elixir"],
+      "settings": {
+      },
+      "syntaxes": [
+        "Packages/Elixir/Syntaxes/Elixir.tmLanguage",
       ]
     },
     "flow":
@@ -305,10 +336,16 @@
     },
     "intelephense-ls":
     {
-         "command": ["intelephense", "--stdio"],
-         "scopes": ["source.php", "embedding.php"],
-         "syntaxes": ["Packages/PHP/PHP.sublime-syntax"],
-         "languageId": "php"
+        "command": ["intelephense", "--stdio"],
+        "scopes": ["source.php", "embedding.php"],
+        "syntaxes": ["Packages/PHP/PHP.sublime-syntax"],
+        "languageId": "php",
+        "initializationOptions": {
+        //   "clearCache": false,
+          "storagePath": null,
+        //   "globalStoragePath": "/tmp/intelephense",
+        //   "licenceKey": "",
+        }
     },
     "reason":
     {
@@ -338,13 +375,21 @@
     {
       "command": ["lsp-tsserver"],
       "languages": [{
-        "scopes": ["source.js", "source.jsx"],
+        "scopes": ["source.js"],
         "syntaxes": ["Packages/Babel/JavaScript (Babel).sublime-syntax", "Packages/JavaScript/JavaScript.sublime-syntax"],
         "languageId": "javascript"
       }, {
-        "scopes": ["source.ts", "source.tsx"],
-        "syntaxes": ["Typescript"],
+        "scopes": ["source.jsx"],
+        "syntaxes": ["Packages/Babel/JavaScript (Babel).sublime-syntax", "Packages/JavaScript/JavaScript.sublime-syntax"],
+        "languageId": "javascriptreact"
+      }, {
+        "scopes": ["source.ts"],
+        "syntaxes": ["Packages/TypeScript-TmLanguage/TypeScript.tmLanguage", "Packages/TypeScript Syntax/TypeScript.tmLanguage"],
         "languageId": "typescript"
+      }, {
+        "scopes": ["source.tsx"],
+        "syntaxes": ["Packages/TypeScript-TmLanguage/TypeScriptReact.tmLanguage", "Packages/TypeScript Syntax/TypeScriptReact.tmLanguage"],
+        "languageId": "typescriptreact"
       }
       ]
     },
@@ -359,13 +404,21 @@
     {
       "command": ["javascript-typescript-stdio"],
       "languages": [{
-        "scopes": ["source.js", "source.jsx"],
-        "syntaxes": ["Javascript"],
+        "scopes": ["source.js"],
+        "syntaxes": ["Packages/Babel/JavaScript (Babel).sublime-syntax", "Packages/JavaScript/JavaScript.sublime-syntax"],
         "languageId": "javascript"
       }, {
-        "scopes": ["source.ts", "source.tsx"],
-        "syntaxes": ["Typescript"],
+        "scopes": ["source.jsx"],
+        "syntaxes": ["Packages/Babel/JavaScript (Babel).sublime-syntax", "Packages/JavaScript/JavaScript.sublime-syntax"],
+        "languageId": "javascriptreact"
+      }, {
+        "scopes": ["source.ts"],
+        "syntaxes": ["Packages/TypeScript-TmLanguage/TypeScript.tmLanguage", "Packages/TypeScript Syntax/TypeScript.tmLanguage"],
         "languageId": "typescript"
+      }, {
+        "scopes": ["source.tsx"],
+        "syntaxes": ["Packages/TypeScript-TmLanguage/TypeScriptReact.tmLanguage", "Packages/TypeScript Syntax/TypeScriptReact.tmLanguage"],
+        "languageId": "typescriptreact"
       }
       ]
     },
@@ -373,10 +426,23 @@
     {
       "command": ["typescript-language-server", "--stdio"],
       "languages": [{
-        "scopes": ["source.ts", "source.tsx"],
-        "syntaxes": ["Typescript"],
+        "scopes": ["source.js"],
+        "syntaxes": ["Packages/Babel/JavaScript (Babel).sublime-syntax", "Packages/JavaScript/JavaScript.sublime-syntax"],
+        "languageId": "javascript"
+      }, {
+        "scopes": ["source.jsx"],
+        "syntaxes": ["Packages/Babel/JavaScript (Babel).sublime-syntax", "Packages/JavaScript/JavaScript.sublime-syntax"],
+        "languageId": "javascriptreact"
+      }, {
+        "scopes": ["source.ts"],
+        "syntaxes": ["Packages/TypeScript-TmLanguage/TypeScript.tmLanguage", "Packages/TypeScript Syntax/TypeScript.tmLanguage"],
         "languageId": "typescript"
-      }]
+      }, {
+        "scopes": ["source.tsx"],
+        "syntaxes": ["Packages/TypeScript-TmLanguage/TypeScriptReact.tmLanguage", "Packages/TypeScript Syntax/TypeScriptReact.tmLanguage"],
+        "languageId": "typescriptreact"
+      }
+      ]
     },
     "ocaml":
     {
@@ -396,7 +462,10 @@
     {
       "command": ["gopls"],
       "scopes": ["source.go"],
-      "syntaxes": ["Packages/Go/Go.sublime-syntax"],
+      "syntaxes": [
+        "Packages/Go/Go.sublime-syntax",
+        "Packages/GoSublime/syntax/GoSublime-Go-Recommended.sublime-syntax",
+      ],
       "languageId": "go"
     },
     "jdtls":
@@ -452,15 +521,44 @@
         "Packages/Rails/Ruby on Rails.sublime-syntax",
         "Packages/Rails/HTML (Rails).sublime-syntax"
       ],
-      "tcp_port": 7658
+      "tcp_port": 7658,
+      // Enable RuboCop linting
+      // "initializationOptions": {
+      //   "diagnostics": true
+      // },
     },
     "vscode-css":
-      {
-        "command": ["css-languageserver", "--stdio"],
-        "scopes": ["source.css"],
-        "syntaxes": ["Packages/CSS/CSS.sublime-syntax"],
-        "languageId": "css"
-      },
+    {
+      "command": 
+      [
+        "css-languageserver", "--stdio"
+      ],
+      "scopes": 
+      [
+        "source.css"
+      ],
+      "syntaxes": 
+      [
+        "Packages/CSS/CSS.sublime-syntax"
+      ],
+      "languageId": "css"
+    },
+    "rlang":
+    {
+      "command":
+      [
+        "R", "--slave", "-e", "languageserver::run()"
+      ],
+      "scopes":
+      [
+        "source.r"
+      ],
+      "syntaxes":
+      [
+        "Packages/R/R.sublime-syntax"
+      ],
+      "languageId": "r"
+    }
 
   }
 }

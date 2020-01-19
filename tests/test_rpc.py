@@ -1,23 +1,18 @@
-from .rpc import (format_request, Client)
-from .transports import Transport
-from .protocol import (Request, Notification)
-from .types import Settings
-from .logging import set_exception_logging
-import unittest
+from LSP.plugin.core.logging import set_exception_logging
+from LSP.plugin.core.protocol import Notification
+from LSP.plugin.core.protocol import Request
+from LSP.plugin.core.rpc import Client
+from LSP.plugin.core.rpc import format_request
+from LSP.plugin.core.transports import Transport
+from LSP.plugin.core.types import Settings
+from test_mocks import MockSettings
 import json
+import unittest
 try:
     from typing import Any, List, Dict, Tuple, Callable, Optional
     assert Any and List and Dict and Tuple and Callable and Optional
 except ImportError:
     pass
-
-
-class MockSettings(Settings):
-
-    def __init__(self):
-        Settings.__init__(self)
-        self.log_payloads = False
-        self.show_view_status = True
 
 
 def return_empty_dict_result(message):
@@ -68,14 +63,14 @@ class MockTransport(Transport):
 class FormatTests(unittest.TestCase):
 
     def test_converts_payload_to_string(self):
-        self.assertEqual("Content-Length: 2\r\n\r\n{}", format_request(dict()))
+        self.assertEqual("{}", format_request(dict()))
 
 
 class ClientTest(unittest.TestCase):
 
     def test_can_create_client(self):
         transport = MockTransport()
-        client = Client(transport, dict())
+        client = Client(transport, Settings())
         self.assertIsNotNone(client)
         self.assertTrue(transport.has_started)
 

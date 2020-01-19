@@ -1,4 +1,4 @@
-from .signature_help import (
+from LSP.plugin.core.signature_help import (
     create_signature_help, SignatureHelp, get_documentation,
     parse_signature_information, ScopeRenderer, render_signature_label
 )
@@ -29,8 +29,27 @@ signature_overload = {
     }]
 }  # type: dict
 
+signature_missing_label = {
+    'documentation': '',
+    'parameters': [{
+        'documentation': None,
+        'label': 'verbose_name'
+    }, {
+        'documentation': None,
+        'label': 'name'
+    }, {
+        'documentation': None,
+        'label': 'primary_key'
+    }, {
+        'documentation': None,
+        'label': 'max_length'
+    }],
+    'label': ''
+}
+
 signature_information = parse_signature_information(signature)
 signature_overload_information = parse_signature_information(signature_overload)
+signature_missing_label_information = parse_signature_information(signature_missing_label)
 
 SINGLE_SIGNATURE = """<div class="highlight"><pre>
 
@@ -41,6 +60,11 @@ SINGLE_SIGNATURE = """<div class="highlight"><pre>
 </pre></div>
 <p>The default function for foobaring</p>
 <p><b>value</b>: A number to foobar on</p>"""
+
+MISSING_LABEL_SIGNATURE = """<div class="highlight"><pre>
+
+<entity.name.function></entity.name.function>
+</pre></div>"""
 
 OVERLOADS_FIRST = """**1** of **2** overloads (use the ↑ ↓ keys to navigate):
 
@@ -91,7 +115,7 @@ def create_signature(label: str, *param_labels, **kwargs) -> dict:
     return raw
 
 
-class TestRenderer(ScopeRenderer):
+class MockRenderer(ScopeRenderer):
 
     def function(self, content: str, escape: bool = True) -> str:
         return self._wrap_with_scope_style(content, "entity.name.function")
@@ -105,8 +129,11 @@ class TestRenderer(ScopeRenderer):
     def _wrap_with_scope_style(self, content: str, scope: str, emphasize: bool = False) -> str:
         return '\n<{}{}>{}</{}>'.format(scope, " emphasize" if emphasize else "", content, scope)
 
+    def markdown(self, content: str) -> str:
+        return content
 
-renderer = TestRenderer()
+
+renderer = MockRenderer()
 
 
 class GetDocumentationTests(unittest.TestCase):
@@ -172,6 +199,18 @@ class RenderSignatureLabelTests(unittest.TestCase):
  \n<variable.parameter emphasize>foo</variable.parameter>: i32
 <punctuation>)</punctuation></entity.name.function>""")
 
+    def test_params_are_substrings_before_comma(self):
+        sig = create_signature("f(x: str, t)", "x", "t")
+        help = create_signature_help(dict(signatures=[sig]))
+        if help:
+            label = render_signature_label(renderer, help.active_signature(), 0)
+            self.assertEqual(label, """
+<entity.name.function>f
+<punctuation>(</punctuation>\
+\n<variable.parameter emphasize>x</variable.parameter>: str,\
+ \n<variable.parameter>t</variable.parameter>
+<punctuation>)</punctuation></entity.name.function>""")
+
     def test_params_with_range(self):
         sig = create_signature("foobar(foo, foo)", [7, 10], [12, 15], activeParameter=1)
         help = create_signature_help(dict(signatures=[sig]))
@@ -195,16 +234,25 @@ class RenderSignatureLabelTests(unittest.TestCase):
  \n<variable.parameter>foo</variable.parameter>\
  \n<variable.parameter emphasize>foo</variable.parameter></entity.name.function>""")
 
-    def test_escape_content(self):
-        sig = create_signature("foobar<T>(foo: Option<i32>) -> List<T>", "foo: Option<i32>", activeParameter=0)
+    def test_long_signature(self):
+        # self.maxDiff = None
+        sig = create_signature(
+            """do_the_foo_bar_if_correct_with_optional_bar_and_uppercase_option(takes_a_mandatory_foo: int, \
+bar_if_needed: Optional[str], in_uppercase: Optional[bool]) -> Optional[str]""",
+            "takes_a_mandatory_foo",
+            "bar_if_needed",
+            "in_uppercase",
+            activeParameter=1)
         help = create_signature_help(dict(signatures=[sig]))
         if help:
-            label = render_signature_label(renderer, help.active_signature(), 0)
+            label = render_signature_label(renderer, help.active_signature(), 1)
             self.assertEqual(label, """
-<entity.name.function>foobar&lt;T&gt;
+<entity.name.function>do_the_foo_bar_if_correct_with_optional_bar_and_uppercase_option
 <punctuation>(</punctuation>
-<variable.parameter emphasize>foo: Option&lt;i32&gt;</variable.parameter>
-<punctuation>)</punctuation> -&gt; List&lt;T&gt;</entity.name.function>""")
+<variable.parameter>takes_a_mandatory_foo</variable.parameter>: int,\
+ <br>&nbsp;&nbsp;&nbsp;&nbsp;\n<variable.parameter emphasize>bar_if_needed</variable.parameter>: Optional[str],\
+ <br>&nbsp;&nbsp;&nbsp;&nbsp;\n<variable.parameter>in_uppercase</variable.parameter>: Optional[bool]
+<punctuation>)</punctuation> -&gt; Optional[str]</entity.name.function>""")
 
 
 class SignatureHelpTests(unittest.TestCase):
@@ -216,6 +264,14 @@ class SignatureHelpTests(unittest.TestCase):
             content = help.build_popup_content(renderer)
             self.assertFalse(help.has_multiple_signatures())
             self.assertEqual(content, SINGLE_SIGNATURE)
+
+    def test_signature_missing_label(self):
+        help = SignatureHelp([signature_missing_label_information])
+        self.assertIsNotNone(help)
+        if help:
+            content = help.build_popup_content(renderer)
+            self.assertFalse(help.has_multiple_signatures())
+            self.assertEqual(content, MISSING_LABEL_SIGNATURE)
 
     def test_overload(self):
         help = SignatureHelp([signature_information, signature_overload_information])

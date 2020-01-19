@@ -1,6 +1,6 @@
 import unittest
 import io
-from .transports import StdioTransport, TCPTransport
+from LSP.plugin.core.transports import TCPTransport
 import time
 try:
     from typing import List
@@ -17,6 +17,7 @@ def json_rpc_message(payload: str) -> bytes:
 
 class FakeProcess(object):
     def __init__(self):
+        self.pid = 12345
         self.stdin = io.BytesIO(b'')  # io.BufferedReader()
         self.stdout = io.BytesIO(
             json_rpc_message("hello") +
@@ -28,6 +29,9 @@ class FakeProcess(object):
 
     def exit(self, returncode):
         self.returncode = returncode
+
+    def wait(self):
+        return self.returncode
 
 
 class FakeSocket(object):
@@ -47,46 +51,6 @@ class FakeSocket(object):
 
     def sendall(self, payload: str) -> None:
         self.sent.append(payload)
-
-
-class StdioTransportTests(unittest.TestCase):
-    def test_read_messages(self):
-
-        process = FakeProcess()
-        t = StdioTransport(process)  # type: ignore
-        self.assertIsNotNone(t)
-        received = []
-
-        def on_receive(msg):
-            received.append(msg)
-
-        def on_close():
-            pass
-
-        t.start(on_receive, on_close)
-        time.sleep(0.01)
-        self.assertEqual(received, ["hello", "world"])
-        t.close()
-
-    def test_write_messages(self):
-
-        process = FakeProcess()
-        t = StdioTransport(process)  # type: ignore
-        self.assertIsNotNone(t)
-        received = []
-
-        def on_receive(msg):
-            received.append(msg)
-
-        def on_close():
-            pass
-
-        t.start(on_receive, on_close)
-        t.send("hello")
-        t.send("world")
-        time.sleep(0.01)
-        self.assertEqual(process.stdin.getvalue(), b"helloworld")
-        t.close()
 
 
 class TCPTransportTests(unittest.TestCase):
@@ -121,9 +85,8 @@ class TCPTransportTests(unittest.TestCase):
             pass
 
         t.start(on_receive, on_close)
-        # TODO: move building payload into transport instead of client.
         t.send("hello")
         t.send("world")
         time.sleep(0.1)
-        self.assertEqual(sock.sent, [b"hello", b"world"])
+        self.assertEqual(sock.sent, [json_rpc_message("hello"), json_rpc_message("world")])
         t.close()

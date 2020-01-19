@@ -7,8 +7,8 @@ import subprocess
 from .logging import exception_log, debug
 
 try:
-    from typing import Callable, Dict, Any, Optional
-    assert Callable and Dict and Any and Optional and subprocess
+    from typing import Callable, Dict, Any, Optional, IO
+    assert Callable and Dict and Any and Optional and subprocess and IO
 except ImportError:
     pass
 
@@ -21,6 +21,10 @@ try:
     from typing import Any, Dict, Callable
     assert Any and Dict and Callable
 except ImportError:
+    pass
+
+
+class UnexpectedProcessExitError(Exception):
     pass
 
 
@@ -37,6 +41,10 @@ class Transport(object, metaclass=ABCMeta):
     def send(self, message: str) -> None:
         pass
 
+    @abstractmethod
+    def close(self) -> None:
+        pass
+
 
 STATE_HEADERS = 0
 STATE_CONTENT = 1
@@ -48,7 +56,17 @@ StateStrings = {STATE_HEADERS: 'STATE_HEADERS',
 
 
 def state_to_string(state: int) -> str:
-    return StateStrings.get(state, '<unknown state: %d>'.format(state))
+    return StateStrings.get(state, '<unknown state: {}>'.format(state))
+
+
+def start_tcp_listener(tcp_port: int) -> socket.socket:
+    sock = socket.socket()
+    sock.bind(('', tcp_port))
+    port = sock.getsockname()[1]
+    sock.settimeout(TCP_CONNECT_TIMEOUT)
+    debug('listening on {}:{}'.format('localhost', port))
+    sock.listen(1)
+    return sock
 
 
 def start_tcp_transport(port: int, host: 'Optional[str]' = None) -> 'Transport':
@@ -64,6 +82,12 @@ def start_tcp_transport(port: int, host: 'Optional[str]' = None) -> 'Transport':
 
     # process.kill()
     raise Exception("Timeout connecting to socket")
+
+
+def build_message(content: str) -> str:
+    content_length = len(content)
+    result = "Content-Length: {}\r\n\r\n{}".format(content_length, content)
+    return result
 
 
 class TCPTransport(Transport):
@@ -131,8 +155,8 @@ class TCPTransport(Transport):
                         is_incomplete = True
                         remaining_data = data
 
-    def send(self, message: str) -> None:
-        self.send_queue.put(message)
+    def send(self, content: str) -> None:
+        self.send_queue.put(build_message(content))
 
     def write_socket(self) -> None:
         while self.socket:
@@ -165,11 +189,18 @@ class StdioTransport(Transport):
         self.send_queue.put(None)  # kill the write thread as it's blocked on send_queue
         self.on_closed()
 
+    def _checked_stdout(self) -> 'IO[Any]':
+        if self.process:
+            return self.process.stdout
+        else:
+            raise UnexpectedProcessExitError()
+
     def read_stdout(self) -> None:
         """
         Reads JSON responses from process and dispatch them to response_handler
         """
         running = True
+        pid = self.process.pid if self.process else "???"
         state = STATE_HEADERS
         content_length = 0
         while running and self.process and state != STATE_EOF:
@@ -177,7 +208,7 @@ class StdioTransport(Transport):
             try:
                 # debug("read_stdout: state = {}".format(state_to_string(state)))
                 if state == STATE_HEADERS:
-                    header = self.process.stdout.readline()
+                    header = self._checked_stdout().readline()
                     # debug('read_stdout reads: {}'.format(header))
                     if not header:
                         # Truly, this is the EOF on the stream
@@ -192,7 +223,7 @@ class StdioTransport(Transport):
                         content_length = int(header[ContentLengthHeader_len:])
                 elif state == STATE_CONTENT:
                     if content_length > 0:
-                        content = self.process.stdout.read(content_length)
+                        content = self._checked_stdout().read(content_length)
                         self.on_receive(content.decode("UTF-8"))
                         # debug("read_stdout: read and received {} byte message".format(content_length))
                         content_length = 0
@@ -203,11 +234,20 @@ class StdioTransport(Transport):
                 exception_log("Failure reading stdout", err)
                 state = STATE_EOF
                 break
+            except UnexpectedProcessExitError:
+                self.close()
+                debug("process became None")
+                state = STATE_EOF
+                break
+        debug("process {} stdout ended {}".format(pid, "(still alive)" if self.process else "(terminated)"))
+        if self.process:
+            # We use the stdout thread to block and wait on the exiting process, or zombie processes may be the result.
+            returncode = self.process.wait()
+            debug("process {} exited with code {}".format(pid, returncode))
+        self.send_queue.put(None)
 
-        debug("LSP stdout process ended.")
-
-    def send(self, message: str) -> None:
-        self.send_queue.put(message)
+    def send(self, content: str) -> None:
+        self.send_queue.put(build_message(content))
 
     def write_stdin(self) -> None:
         while self.process:
@@ -217,7 +257,10 @@ class StdioTransport(Transport):
             else:
                 try:
                     msgbytes = bytes(message, 'UTF-8')
-                    self.process.stdin.write(msgbytes)
+                    try:
+                        self.process.stdin.write(msgbytes)
+                    except AttributeError:
+                        return
                     self.process.stdin.flush()
                 except (BrokenPipeError, OSError) as err:
                     exception_log("Failure writing to stdout", err)
